@@ -13,12 +13,14 @@ const pos = () => new Promise<{ lat: number; lng: number } | null>((r) => {
     () => { clearTimeout(t); r(null); }, { enableHighAccuracy: true, timeout: 8000 });
 });
 const nextMonday = () => { const d = new Date(day()); while (d.getUTCDay() !== 1) d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
+const isPhone = () => /iPhone|iPad|Android/i.test(navigator.userAgent);
 
 export default function Home() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [trips, setTrips] = useState<any[]>([]);
   const [items, setItems] = useState(""), [label, setLabel] = useState(""), [start, setStart] = useState("");
   const [em, setEm] = useState(""), [pw, setPw] = useState(""), [msg, setMsg] = useState("");
+  const [ready, setReady] = useState<File | null>(null);
   const monday = nextMonday();
   const open = trips.find((t) => !t.returned_at);
 
@@ -39,7 +41,7 @@ export default function Home() {
     const { error } = await supabase.auth.signInWithPassword({ email: em, password: pw });
     if (error) setMsg(error.message);
   }
-   async function leave() {
+  async function leave() {
     setMsg("Getting location…"); const p = await pos();
     const { error } = await supabase.from("trips").insert({ work_date: day(), left_lat: p?.lat, left_lng: p?.lng });
     if (error) return setMsg("Could not save: " + error.message);
@@ -53,7 +55,8 @@ export default function Home() {
   }
   async function addStop() {
     if (!open) return; const p = await pos();
-    await supabase.from("trips").update({ stops: [...open.stops, { t: new Date().toISOString(), label, ...p }] }).eq("id", open.id);
+    const { error } = await supabase.from("trips").update({ stops: [...open.stops, { t: new Date().toISOString(), label, ...p }] }).eq("id", open.id);
+    if (error) return setMsg("Could not save: " + error.message);
     setLabel(""); load();
   }
   async function saveTools() {
@@ -61,15 +64,22 @@ export default function Home() {
     setMsg(error ? "Could not save: " + error.message : "Tools list saved.");
   }
   async function download() {
-    setMsg("Preparing report…");
+    setReady(null); setMsg("Preparing report…");
     const { data } = await supabase.auth.getSession();
     const r = await fetch(`/api/report?start=${start}`, { headers: { Authorization: `Bearer ${data.session?.access_token}` } });
     if (!r.ok) return setMsg("Report failed: " + (await r.text()));
-    const url = URL.createObjectURL(await r.blob());
-    const a = document.createElement("a");
-    a.href = url; a.download = `hours_${start}.xlsx`;
+    const file = new File([await r.blob()], `hours_${start}.xlsx`,
+      { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    if (isPhone()) { setReady(file); setMsg("Report ready. Tap Save or share report below."); }
+    else saveFile(file);
+  }
+  async function saveFile(file: File) {
+    try {
+      if (isPhone() && navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file] }); return; }
+    } catch (e: any) { if (e?.name === "AbortError") return; }
+    const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name;
     document.body.appendChild(a); a.click(); a.remove();
-    setMsg(`Report ready: hours_${start}.xlsx (see your Downloads)`);
+    setMsg(`Report ready: ${file.name}`);
   }
 
   if (authed === null) return <main>Loading…</main>;
@@ -98,7 +108,9 @@ export default function Home() {
       <div className="card"><h2>Hours report</h2>
         <label className="mut">Period start date (14 days)</label>
         <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-        <button disabled={!start} onClick={download}>Download Excel</button></div>
+        <button disabled={!start} onClick={download}>Download Excel</button>
+        {ready && <button style={{ marginLeft: 8 }} onClick={() => saveFile(ready)}>Save or share report</button>}
+        <p className="mut">{msg}</p></div>
       <div className="card"><h2>Trips</h2><div className="scroll"><table>
         <thead><tr><th>Date</th><th>Out</th><th>Back</th><th>Hrs</th></tr></thead><tbody>
         {trips.map((t) => <tr key={t.id}><td>{t.work_date}</td><td>{tm(t.left_at)}</td><td>{tm(t.returned_at)}</td>
